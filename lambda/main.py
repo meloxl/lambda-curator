@@ -8,7 +8,8 @@ import curator
 
 from curator.exceptions import NoIndices
 from elasticsearch import Elasticsearch, RequestsHttpConnection
-from aws_requests_auth.aws_auth import AWSRequestsAuth
+# from aws_requests_auth.aws_auth import AWSRequestsAuth
+from requests_aws4auth import AWS4Auth
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -33,7 +34,7 @@ def find_nonvpc_domains():
         for domain in es.list_domain_names()['DomainNames']:
             tags = []
             domain_info = es.describe_elasticsearch_domain(DomainName=domain['DomainName'])
-            if 'Endpoint' not in domain_info['DomainStatus']: 
+            if 'Endpoint' not in domain_info['DomainStatus']:
                 continue
             endpoint = domain_info['DomainStatus']['Endpoint']
             tags_info = es.list_tags(ARN=domain_info['DomainStatus']['ARN'])
@@ -81,13 +82,30 @@ def lambda_handler(event, context):
         return {'deleted': deleted_indices}
 
     for region, endpoint, tags in actionable_domains:
-        auth = AWSRequestsAuth(aws_access_key=os.environ.get('AWS_ACCESS_KEY_ID'),
-                               aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-                               aws_token=os.environ.get('AWS_SESSION_TOKEN'),
-                               aws_host=endpoint,
-                               aws_region=region,
-                               aws_service='es')
-        es = Elasticsearch(host=endpoint, port=80, connection_class=RequestsHttpConnection, http_auth=auth)
+        # auth = AWSRequestsAuth(aws_access_key=os.environ.get('AWS_ACCESS_KEY_ID'),
+        #                        aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+        #                        aws_token=os.environ.get('AWS_SESSION_TOKEN'),
+        #                        aws_host=endpoint,
+        #                        aws_region=region,
+        #                        aws_service='es')
+        # es = Elasticsearch(host=endpoint, port=80, connection_class=RequestsHttpConnection, http_auth=auth)
+
+        session = boto3.Session()
+        credentials = session.get_credentials()
+        awsauth = AWS4Auth(credentials.access_key, credentials.secret_key, session.region_name, 'es',
+                       session_token=credentials.token)
+        print('Connecting to the ES Endpoint: {endpoint}'.format(endpoint=endpoint))
+        try:
+            es = Elasticsearch(
+                hosts=[{'host': endpoint, 'port': 443}],
+                use_ssl=True,
+                verify_certs=True,
+                http_auth=awsauth,
+                connection_class=RequestsHttpConnection)
+        except Exception as e:
+            print("Unable to connect to {endpoint}:".format(endpoint=endpoint), e)
+        else:
+            print('Connected to elasticsearch')
 
         deleted_indices[endpoint] = []
 
@@ -117,9 +135,9 @@ def lambda_handler(event, context):
 
         for prefix, retention_period in curator_config.items():
             index_list = curator.IndexList(es)
-            matched_suffix = re.match(r'(.*)-(\d{4}([-/.]w?\d{2}){,3})$', index_list)
-            if not matched_suffix:
-                continue
+            # matched_suffix = re.match(r'(.*)-(\d{4}([-/.]w?\d{2}){,3})$', index_list)
+            # if not matched_suffix:
+            #     continue
             matched = re.match(r'(\d+)([y|m|w|d|h])', retention_period)
             if not matched:
                 continue
